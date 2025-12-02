@@ -81,7 +81,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, user, onLogout }) => {
                 className="h-8 w-auto object-contain" 
                 onError={(e) => e.currentTarget.style.display = 'none'}
               />
-              “科睿思公司記帳系統”
+              記帳系統
             </h1>
           </div>
 
