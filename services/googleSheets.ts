@@ -1,8 +1,8 @@
 import { storageService } from './storage';
-import { Transaction, User } from '../types';
+import { Category, ProjectDept, Transaction, User } from '../types';
 
 export const googleSheetsService = {
-  // 1. Submit Data (Fire and Forget)
+  // 1. Submit Transaction (Fire and Forget)
   syncTransaction: async (
     tx: Transaction,
     user: User,
@@ -14,7 +14,8 @@ export const googleSheetsService = {
     if (!scriptUrl) return;
 
     const payload = {
-      id: tx.id, // Important: ID is used for merging/updating status later
+      dataType: 'TRANSACTION',
+      id: tx.id,
       date: tx.date,
       type: tx.type,
       amount: tx.amount,
@@ -28,51 +29,126 @@ export const googleSheetsService = {
     };
 
     try {
-      // mode: 'no-cors' is CRITICAL for submission to avoid blocking.
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors', 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      console.log('Sent to Google Sheet (Background)');
     } catch (error) {
       console.error('Google Sheet Sync Error:', error);
     }
   },
 
-  // 2. Fetch Users (GET)
+  // 2. Sync Category (Add/Delete)
+  syncCategory: async (category: Category, action: 'ADD' | 'DELETE') => {
+    const scriptUrl = storageService.getGoogleScriptUrl();
+    if (!scriptUrl) return;
+
+    const payload = {
+      dataType: 'CATEGORY',
+      action: action,
+      id: category.id,
+      name: category.name,
+      type: category.type
+    };
+
+    try {
+      await fetch(scriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      console.error('Category Sync Error:', error);
+    }
+  },
+
+  // 3. Sync Project (Add/Delete)
+  syncProject: async (project: ProjectDept, action: 'ADD' | 'DELETE') => {
+    const scriptUrl = storageService.getGoogleScriptUrl();
+    if (!scriptUrl) return;
+
+    const payload = {
+      dataType: 'PROJECT',
+      action: action,
+      id: project.id,
+      name: project.name
+    };
+
+    try {
+      await fetch(scriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (error) {
+      console.error('Project Sync Error:', error);
+    }
+  },
+
+  // 4. Fetch Users
   fetchUsers: async (): Promise<User[]> => {
     const scriptUrl = storageService.getGoogleScriptUrl();
     if (!scriptUrl) return [];
 
     try {
-      // Add timestamp to prevent caching
       const response = await fetch(`${scriptUrl}?action=getUsers&t=${Date.now()}`);
       if (response.ok) {
-        const users = await response.json();
-        return users;
+        return await response.json();
       }
     } catch (error) {
-      console.error('Failed to fetch users from cloud:', error);
+      console.error('Failed to fetch users:', error);
     }
     return [];
   },
 
-  // 3. Fetch Transactions Status (GET)
+  // 5. Fetch Categories
+  fetchCategories: async (): Promise<Category[]> => {
+    const scriptUrl = storageService.getGoogleScriptUrl();
+    if (!scriptUrl) return [];
+
+    try {
+      const response = await fetch(`${scriptUrl}?action=getCategories&t=${Date.now()}`);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (error) {
+      console.error('Failed to fetch categories:', error);
+    }
+    return [];
+  },
+
+  // 6. Fetch Projects
+  fetchProjects: async (): Promise<ProjectDept[]> => {
+    const scriptUrl = storageService.getGoogleScriptUrl();
+    if (!scriptUrl) return [];
+
+    try {
+      const response = await fetch(`${scriptUrl}?action=getProjects&t=${Date.now()}`);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch (error) {
+      console.error('Failed to fetch projects:', error);
+    }
+    return [];
+  },
+
+  // 7. Fetch Transaction Status
   fetchTransactions: async (userId: string): Promise<Transaction[]> => {
     const scriptUrl = storageService.getGoogleScriptUrl();
     if (!scriptUrl) return [];
 
     try {
-      // Add timestamp to prevent caching
       const response = await fetch(`${scriptUrl}?action=getTransactions&userId=${userId}&t=${Date.now()}`);
       if (response.ok) {
-        const data = await response.json();
-        return data as Transaction[];
+        return await response.json();
       }
     } catch (error) {
-      console.error('Failed to fetch transactions from cloud:', error);
+      console.error('Failed to fetch transactions:', error);
     }
     return [];
   }
