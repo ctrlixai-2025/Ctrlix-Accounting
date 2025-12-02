@@ -12,11 +12,33 @@ const KEYS = {
 };
 
 const initStorage = () => {
-  if (!localStorage.getItem(KEYS.TRANSACTIONS)) localStorage.setItem(KEYS.TRANSACTIONS, JSON.stringify(INITIAL_TRANSACTIONS));
+  // 1. Transactions
+  if (!localStorage.getItem(KEYS.TRANSACTIONS)) {
+    localStorage.setItem(KEYS.TRANSACTIONS, JSON.stringify(INITIAL_TRANSACTIONS));
+  } else {
+    // Auto-cleanup legacy mock data (t1, t2, t3) if they exist
+    try {
+      const existing = JSON.parse(localStorage.getItem(KEYS.TRANSACTIONS) || '[]');
+      const filtered = existing.filter((t: Transaction) => !['t1', 't2', 't3'].includes(t.id));
+      if (filtered.length !== existing.length) {
+        localStorage.setItem(KEYS.TRANSACTIONS, JSON.stringify(filtered));
+        console.log('Cleaned up legacy mock transactions');
+      }
+    } catch (e) {
+      console.error('Error cleaning up transactions', e);
+    }
+  }
+
+  // 2. Categories
   if (!localStorage.getItem(KEYS.CATEGORIES)) localStorage.setItem(KEYS.CATEGORIES, JSON.stringify(INITIAL_CATEGORIES));
+  
+  // 3. Projects
   if (!localStorage.getItem(KEYS.PROJECTS)) localStorage.setItem(KEYS.PROJECTS, JSON.stringify(INITIAL_PROJECTS));
+  
+  // 4. Payment Methods
   if (!localStorage.getItem(KEYS.PAYMENT_METHODS)) localStorage.setItem(KEYS.PAYMENT_METHODS, JSON.stringify(INITIAL_PAYMENT_METHODS));
   
+  // 5. Users List
   if (!localStorage.getItem(KEYS.USERS_LIST)) {
     const defaultAdmin: User = {
       id: 'admin',
@@ -81,15 +103,13 @@ export const storageService = {
         localTxs[index] = {
           ...localTxs[index],
           status: normalizedStatus, 
-          // Update display names if provided by cloud (though currently we primarily sync status)
+          // Update display names if provided by cloud
           categoryName: cloudTx.categoryName || localTxs[index].categoryName,
           projectName: cloudTx.projectName || localTxs[index].projectName,
           recordedByName: cloudTx.recordedByName || localTxs[index].recordedByName,
         };
       } else {
-        // If it exists in cloud but not local (rare in this offline-first flow, but possible if user cleared storage)
-        // We add it, but note that we might miss some details if cloud doesn't send everything back.
-        // For status sync, we mostly care about updating existing ones.
+        // If it exists in cloud but not local, add it
         localTxs.push({ ...cloudTx, status: normalizedStatus });
       }
     });
