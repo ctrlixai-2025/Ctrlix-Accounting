@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { storageService } from '../services/storage';
 import { googleSheetsService } from '../services/googleSheets';
 import { Role, Transaction, TransactionStatus, User } from '../types';
-import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare } from 'lucide-react';
+import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare, Trash2 } from 'lucide-react';
 
 interface Props {
   user: User;
@@ -145,6 +145,26 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
   };
 
+  const handleDelete = async (e: React.MouseEvent, tx: Transaction) => {
+    e.stopPropagation();
+    if (!window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
+
+    // 1. Update Local Storage
+    storageService.deleteTransaction(tx.id);
+    
+    // 2. Update UI
+    setLocalTx(prev => prev.filter(t => t.id !== tx.id));
+
+    // 3. Sync to Cloud (Fire delete command)
+    await googleSheetsService.deleteTransaction(tx.id);
+  };
+
+  const canDelete = (tx: Transaction) => {
+    if (user.role === Role.MANAGER) return true;
+    if (user.role === Role.EMPLOYEE && tx.recordedById === user.id && tx.status === TransactionStatus.PENDING) return true;
+    return false;
+  };
+
   const getStatusBadge = (status: TransactionStatus) => {
     switch(status) {
       case TransactionStatus.APPROVED:
@@ -276,11 +296,21 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                   {user.role === Role.MANAGER && <ManagerActions tx={tx} />}
                 </div>
                 
-                {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
-                    <span className="text-sm text-blue-600 font-medium flex items-center bg-blue-50 px-2 py-1 rounded">
-                        編輯 <Edit2 className="w-3 h-3 ml-1" />
-                    </span>
-                )}
+                <div className="flex items-center gap-2">
+                    {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
+                        <span className="text-sm text-blue-600 font-medium flex items-center bg-blue-50 px-2 py-1 rounded">
+                            編輯 <Edit2 className="w-3 h-3 ml-1" />
+                        </span>
+                    )}
+                    {canDelete(tx) && (
+                        <button 
+                            onClick={(e) => handleDelete(e, tx)}
+                            className="p-1.5 text-red-500 bg-red-50 rounded hover:bg-red-100"
+                        >
+                            <Trash2 className="w-4 h-4" />
+                        </button>
+                    )}
+                </div>
               </div>
             </div>
           ))
@@ -332,15 +362,26 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
-                        <button 
-                          onClick={() => navigate(`/edit/${tx.id}`)}
-                          className="text-blue-600 hover:text-blue-900 bg-blue-50 p-2 rounded-full"
-                          title="編輯詳情"
-                        >
-                          <Edit2 className="w-4 h-4" />
-                        </button>
-                      )}
+                        <div className="flex items-center justify-end gap-2">
+                            {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
+                                <button 
+                                onClick={() => navigate(`/edit/${tx.id}`)}
+                                className="text-blue-600 hover:text-blue-900 bg-blue-50 p-2 rounded-full"
+                                title="編輯詳情"
+                                >
+                                <Edit2 className="w-4 h-4" />
+                                </button>
+                            )}
+                            {canDelete(tx) && (
+                                <button 
+                                    onClick={(e) => handleDelete(e, tx)}
+                                    className="text-red-600 hover:text-red-900 bg-red-50 p-2 rounded-full"
+                                    title="刪除"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
                     </td>
                   </tr>
                 ))}
