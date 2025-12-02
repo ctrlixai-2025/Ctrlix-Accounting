@@ -16,8 +16,10 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
   
-  // Local state to force re-render after sync
+  // Local state
   const [localTx, setLocalTx] = useState(storageService.getTransactions());
+  // We don't render this state, but triggering a fetch updates localStorage for the Form to use
+  const [_, setConfigVersion] = useState(0); 
 
   const categories = storageService.getCategories();
   const projects = storageService.getProjects();
@@ -26,12 +28,28 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const sync = async () => {
     if (isSyncing) return;
     setIsSyncing(true);
+    
+    // 1. Fetch Transactions Status
     const cloudTxs = await googleSheetsService.fetchTransactions(user.id);
     if (cloudTxs && cloudTxs.length > 0) {
       const merged = storageService.mergeTransactions(cloudTxs);
-      setLocalTx(merged); // Update view
-      setLastSyncTime(new Date().toLocaleTimeString());
+      setLocalTx(merged);
     }
+
+    // 2. Fetch Latest Categories (Silent Update)
+    const cloudCats = await googleSheetsService.fetchCategories();
+    if (cloudCats && cloudCats.length > 0) {
+        storageService.updateCategoriesList(cloudCats);
+    }
+
+    // 3. Fetch Latest Projects (Silent Update)
+    const cloudProjs = await googleSheetsService.fetchProjects();
+    if (cloudProjs && cloudProjs.length > 0) {
+        storageService.updateProjectsList(cloudProjs);
+    }
+    
+    setConfigVersion(v => v + 1); // trigger re-render if needed
+    setLastSyncTime(new Date().toLocaleTimeString());
     setIsSyncing(false);
   };
 
@@ -41,7 +59,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   }, [user.id]);
 
   const filteredData = useMemo(() => {
-    let data = localTx; // Use local state
+    let data = localTx; 
     
     if (user.role === Role.EMPLOYEE) {
       data = data.filter(t => t.recordedById === user.id);
@@ -213,7 +231,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         )}
       </div>
       
-      {/* Desktop View (Table) - Kept as backup but hidden on mobile */}
+      {/* Desktop View (Table) */}
       <div className="hidden md:block bg-white rounded-xl shadow-sm overflow-hidden border">
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
