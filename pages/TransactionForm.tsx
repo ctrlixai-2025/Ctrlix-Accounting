@@ -4,7 +4,7 @@ import { storageService } from '../services/storage';
 import { googleSheetsService } from '../services/googleSheets';
 import { analyzeReceipt } from '../services/gemini';
 import { Role, Transaction, TransactionStatus, TransactionType, User } from '../types';
-import { Camera, Save, ArrowLeft, Loader2, Sparkles, Image as ImageIcon } from 'lucide-react';
+import { Camera, Save, ArrowLeft, Loader2, Sparkles, Image as ImageIcon, Trash2 } from 'lucide-react';
 
 interface Props {
   user: User;
@@ -137,18 +137,54 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     }, 100); // Tiny delay to ensure local storage write
   };
 
+  const handleDelete = async () => {
+      if (!formData.id || !window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
+      setIsLoading(true);
+
+      // 1. Delete Locally
+      storageService.deleteTransaction(formData.id);
+
+      // 2. Delete from Cloud
+      await googleSheetsService.deleteTransaction(formData.id);
+
+      // 3. Navigate
+      setTimeout(() => {
+        setIsLoading(false);
+        navigate('/transactions');
+      }, 100);
+  };
+
+  const canDelete = () => {
+    if (!id) return false; // Can't delete a new record
+    if (user.role === Role.MANAGER) return true;
+    if (user.role === Role.EMPLOYEE && formData.recordedById === user.id && formData.status === TransactionStatus.PENDING) return true;
+    return false;
+  };
+
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      <div className="flex items-center gap-4 mb-6">
-        <button 
-          onClick={() => navigate(-1)}
-          className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-        >
-          <ArrowLeft className="w-6 h-6 text-gray-600" />
-        </button>
-        <h2 className="text-2xl font-bold text-gray-800">
-          {id ? '編輯記錄' : '新增記錄'}
-        </h2>
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+            <button 
+            onClick={() => navigate(-1)}
+            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+            >
+            <ArrowLeft className="w-6 h-6 text-gray-600" />
+            </button>
+            <h2 className="text-2xl font-bold text-gray-800">
+            {id ? '編輯記錄' : '新增記錄'}
+            </h2>
+        </div>
+        {canDelete() && (
+            <button 
+                type="button" 
+                onClick={handleDelete}
+                className="text-red-500 hover:text-red-700 p-2 rounded-lg flex items-center gap-1"
+            >
+                <Trash2 className="w-5 h-5" />
+                <span className="text-sm font-medium">刪除</span>
+            </button>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
