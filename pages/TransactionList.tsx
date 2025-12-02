@@ -2,8 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { storageService } from '../services/storage';
 import { googleSheetsService } from '../services/googleSheets';
-import { Role, TransactionStatus, User } from '../types';
-import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw } from 'lucide-react';
+import { Role, Transaction, TransactionStatus, User } from '../types';
+import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare } from 'lucide-react';
 
 interface Props {
   user: User;
@@ -23,6 +23,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
 
   const categories = storageService.getCategories();
   const projects = storageService.getProjects();
+  const paymentMethods = storageService.getPaymentMethods();
   const usersList = storageService.getUsers();
 
   const sync = async () => {
@@ -120,6 +121,30 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     link.click();
   };
 
+  const handleStatusUpdate = async (e: React.MouseEvent, tx: Transaction, newStatus: TransactionStatus) => {
+      e.stopPropagation(); // Prevent opening edit modal
+      if (!window.confirm(`確定要將狀態更新為「${newStatus === TransactionStatus.APPROVED ? '已審核' : '已入帳'}」嗎？`)) return;
+
+      const updatedTx = { ...tx, status: newStatus };
+      
+      // 1. Update Local Storage
+      storageService.saveTransaction(updatedTx);
+      
+      // 2. Update UI
+      setLocalTx(prev => prev.map(t => t.id === tx.id ? updatedTx : t));
+
+      // 3. Sync to Cloud
+      // We need to fetch readable names again to ensure sync payload is complete
+      const catName = getCategoryName(tx.categoryId, tx.categoryName);
+      const projName = getProjectName(tx.projectDeptId, tx.projectName);
+      const pmName = paymentMethods.find(p => p.id === tx.paymentMethodId)?.name || 'Unknown';
+      
+      // Note: This updates the log in Google Sheet. 
+      // recordedByName will effectively become the Manager's name if we pass 'user', 
+      // acting as an "Updated By" log.
+      await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
+  };
+
   const getStatusBadge = (status: TransactionStatus) => {
     switch(status) {
       case TransactionStatus.APPROVED:
@@ -135,6 +160,34 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       if(hasTaxId) return <span className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded border border-purple-200 ml-2">統編</span>
       return null;
   }
+
+  // Manager Action Buttons Component
+  const ManagerActions = ({ tx }: { tx: Transaction }) => {
+    if (user.role !== Role.MANAGER) return null;
+
+    return (
+      <div className="flex items-center gap-1">
+        {tx.status === TransactionStatus.PENDING && (
+          <button 
+            onClick={(e) => handleStatusUpdate(e, tx, TransactionStatus.APPROVED)}
+            className="flex items-center px-2 py-1 bg-green-50 text-green-700 rounded border border-green-200 hover:bg-green-100 text-xs font-medium transition-colors"
+            title="通過審核"
+          >
+            <ThumbsUp className="w-3 h-3 mr-1" /> 通過
+          </button>
+        )}
+        {(tx.status === TransactionStatus.PENDING || tx.status === TransactionStatus.APPROVED) && (
+          <button 
+            onClick={(e) => handleStatusUpdate(e, tx, TransactionStatus.BOOKED)}
+            className="flex items-center px-2 py-1 bg-blue-50 text-blue-700 rounded border border-blue-200 hover:bg-blue-100 text-xs font-medium transition-colors"
+            title="確認入帳"
+          >
+            <CheckSquare className="w-3 h-3 mr-1" /> 入帳
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-3 md:space-y-6 pb-20">
@@ -211,15 +264,18 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                 </div>
               </div>
 
-              {user.role === Role.MANAGER && (
-                 <div className="mb-3 text-xs text-gray-500 flex items-center">
-                    <UserIcon className="w-3 h-3 mr-1" />
-                    填寫人: <span className="font-medium text-gray-700 ml-1">{getUserName(tx.recordedById, tx.recordedByName)}</span>
-                 </div>
-              )}
+              {/* Show Recorder for Everyone */}
+              <div className="mb-3 text-xs text-gray-500 flex items-center">
+                  <UserIcon className="w-3 h-3 mr-1" />
+                  填寫人: <span className="font-medium text-gray-700 ml-1">{getUserName(tx.recordedById, tx.recordedByName)}</span>
+              </div>
 
               <div className="flex justify-between items-center pt-3 border-t border-gray-100">
-                {getStatusBadge(tx.status)}
+                <div className="flex items-center gap-2">
+                  {getStatusBadge(tx.status)}
+                  {user.role === Role.MANAGER && <ManagerActions tx={tx} />}
+                </div>
+                
                 {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
                     <span className="text-sm text-blue-600 font-medium flex items-center bg-blue-50 px-2 py-1 rounded">
                         編輯 <Edit2 className="w-3 h-3 ml-1" />
@@ -238,9 +294,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">日期</th>
-                {user.role === Role.MANAGER && (
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">填寫人</th>
-                )}
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">填寫人</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">摘要</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">金額</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">科目/專案</th>
@@ -252,11 +306,9 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
               {filteredData.map((tx) => (
                   <tr key={tx.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{tx.date}</td>
-                    {user.role === Role.MANAGER && (
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800 font-medium">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800 font-medium">
                         {getUserName(tx.recordedById, tx.recordedByName)}
-                      </td>
-                    )}
+                    </td>
                     <td className="px-6 py-4 text-sm text-gray-900">
                       <div className="flex items-center">
                         <span className="font-medium">{tx.summary}</span>
@@ -271,13 +323,20 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                       <div className="text-xs text-gray-400">{getProjectName(tx.projectDeptId, tx.projectName)}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      {getStatusBadge(tx.status)}
+                      <div className="flex flex-col gap-1 items-start">
+                        {getStatusBadge(tx.status)}
+                        {/* Quick Actions for Manager in Desktop Table */}
+                        {user.role === Role.MANAGER && (
+                           <ManagerActions tx={tx} />
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
                         <button 
                           onClick={() => navigate(`/edit/${tx.id}`)}
                           className="text-blue-600 hover:text-blue-900 bg-blue-50 p-2 rounded-full"
+                          title="編輯詳情"
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
