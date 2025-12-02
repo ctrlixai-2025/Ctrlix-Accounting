@@ -63,7 +63,10 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     let data = localTx; 
     
     if (user.role === Role.EMPLOYEE) {
-      data = data.filter(t => t.recordedById === user.id);
+      // Employees see their own records. 
+      // We check by ID first, but if data was synced from cloud without ID map, we might need to rely on Name.
+      // However, for viewing the list, 'recordedById' is usually set correctly during creation or merge.
+      data = data.filter(t => t.recordedById === user.id || t.recordedByName === user.name);
     }
 
     if (filterStatus !== 'ALL') {
@@ -161,7 +164,12 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
 
   const canDelete = (tx: Transaction) => {
     if (user.role === Role.MANAGER) return true;
-    if (user.role === Role.EMPLOYEE && tx.recordedById === user.id && tx.status === TransactionStatus.PENDING) return true;
+    if (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING) {
+        // Primary check: ID
+        if (tx.recordedById === user.id) return true;
+        // Fallback check: Name (Useful if data synced from cloud has different/missing ID structure)
+        if (tx.recordedByName === user.name) return true;
+    }
     return false;
   };
 
@@ -305,9 +313,10 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                     {canDelete(tx) && (
                         <button 
                             onClick={(e) => handleDelete(e, tx)}
-                            className="p-1.5 text-red-500 bg-red-50 rounded hover:bg-red-100"
+                            className="flex items-center px-2 py-1.5 text-red-600 bg-red-50 rounded hover:bg-red-100 text-xs font-medium"
                         >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3 h-3 mr-1" />
+                            刪除
                         </button>
                     )}
                 </div>
