@@ -1,0 +1,7 @@
+{
+  "name": "InternalBooks PWA",
+  "description": "A progressive web application for internal company accounting with role-based access control (Manager/Employee), dynamic categorization, and AI-powered receipt scanning.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
