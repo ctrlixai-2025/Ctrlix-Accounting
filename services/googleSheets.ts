@@ -32,6 +32,7 @@ export const googleSheetsService = {
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors', 
+        keepalive: true, // Ensure request survives navigation
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -54,6 +55,7 @@ export const googleSheetsService = {
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors',
+        keepalive: true, // Ensure request survives navigation
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -79,6 +81,7 @@ export const googleSheetsService = {
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors',
+        keepalive: true,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -103,6 +106,7 @@ export const googleSheetsService = {
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors',
+        keepalive: true,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
