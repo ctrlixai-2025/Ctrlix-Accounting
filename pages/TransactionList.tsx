@@ -23,19 +23,20 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const projects = storageService.getProjects();
   const usersList = storageService.getUsers();
 
+  const sync = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    const cloudTxs = await googleSheetsService.fetchTransactions(user.id);
+    if (cloudTxs && cloudTxs.length > 0) {
+      const merged = storageService.mergeTransactions(cloudTxs);
+      setLocalTx(merged); // Update view
+      setLastSyncTime(new Date().toLocaleTimeString());
+    }
+    setIsSyncing(false);
+  };
+
   // Auto Sync on Mount
   useEffect(() => {
-    const sync = async () => {
-      setIsSyncing(true);
-      const cloudTxs = await googleSheetsService.fetchTransactions(user.id);
-      if (cloudTxs && cloudTxs.length > 0) {
-        const merged = storageService.mergeTransactions(cloudTxs);
-        setLocalTx(merged); // Update view
-        setLastSyncTime(new Date().toLocaleTimeString());
-      }
-      setIsSyncing(false);
-    };
-    
     sync();
   }, [user.id]);
 
@@ -122,11 +123,15 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-4 sticky top-0 bg-gray-50 z-10 pb-2">
         <div className="flex items-center gap-2 pl-1">
             <h2 className="text-xl md:text-2xl font-bold text-gray-800">{user.role === Role.MANAGER ? '審核清單' : '我的記錄'}</h2>
-            {isSyncing ? (
-                <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" />
-            ) : (
-                lastSyncTime && <span className="text-[10px] text-gray-400">已同步 {lastSyncTime}</span>
-            )}
+            <button 
+                onClick={sync} 
+                className="flex items-center gap-1 text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded-full hover:bg-blue-100 transition-colors"
+                disabled={isSyncing}
+            >
+                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+                {isSyncing ? '更新中...' : '立即同步'}
+            </button>
+            {!isSyncing && lastSyncTime && <span className="text-[10px] text-gray-400 hidden sm:inline">({lastSyncTime})</span>}
         </div>
         
         <div className="flex flex-col sm:flex-row gap-2">
