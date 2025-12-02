@@ -38,7 +38,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
       const tx = storageService.getTransactions().find(t => t.id === id);
       if (tx) {
         // Permission check
-        if (user.role === Role.EMPLOYEE && tx.recordedById !== user.id) {
+        if (user.role === Role.EMPLOYEE && tx.recordedById !== user.id && tx.recordedByName !== user.name) {
           alert('無權限編輯此記錄');
           navigate('/transactions');
           return;
@@ -157,7 +157,12 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
   const canDelete = () => {
     if (!id) return false; // Can't delete a new record
     if (user.role === Role.MANAGER) return true;
-    if (user.role === Role.EMPLOYEE && formData.recordedById === user.id && formData.status === TransactionStatus.PENDING) return true;
+    if (user.role === Role.EMPLOYEE && formData.status === TransactionStatus.PENDING) {
+        // ID check first
+        if (formData.recordedById === user.id) return true;
+        // Name check fallback
+        if (formData.recordedByName === user.name) return true;
+    }
     return false;
   };
 
