@@ -29,7 +29,6 @@ export const googleSheetsService = {
 
     try {
       // mode: 'no-cors' is CRITICAL for submission to avoid blocking.
-      // This means we won't get a response, but the browser won't wait for one either.
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors', 
@@ -48,8 +47,8 @@ export const googleSheetsService = {
     if (!scriptUrl) return [];
 
     try {
-      // GET requests usually work with CORS if the GAS is set to "Anyone"
-      const response = await fetch(`${scriptUrl}?action=getUsers`);
+      // Add timestamp to prevent caching
+      const response = await fetch(`${scriptUrl}?action=getUsers&t=${Date.now()}`);
       if (response.ok) {
         const users = await response.json();
         return users;
@@ -66,8 +65,8 @@ export const googleSheetsService = {
     if (!scriptUrl) return [];
 
     try {
-      // We pass userId so the script can filter, or returns all and we filter locally
-      const response = await fetch(`${scriptUrl}?action=getTransactions&userId=${userId}`);
+      // Add timestamp to prevent caching
+      const response = await fetch(`${scriptUrl}?action=getTransactions&userId=${userId}&t=${Date.now()}`);
       if (response.ok) {
         const data = await response.json();
         return data as Transaction[];
