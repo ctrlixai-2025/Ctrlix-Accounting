@@ -134,7 +134,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     setTimeout(() => {
         setIsLoading(false);
         navigate('/transactions');
-    }, 100); // Tiny delay to ensure local storage write
+    }, 500); // Increased delay to 500ms to allow keepalive request to register
   };
 
   const handleDelete = async () => {
@@ -151,7 +151,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
       setTimeout(() => {
         setIsLoading(false);
         navigate('/transactions');
-      }, 100);
+      }, 500); // Increased delay
   };
 
   const canDelete = () => {
