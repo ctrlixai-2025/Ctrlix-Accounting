@@ -91,18 +91,17 @@ export const storageService = {
       const index = localTxs.findIndex(t => t.id === cloudTx.id);
       if (index >= 0) {
         // Update existing transaction with cloud status/data
-        // We preserve local attachmentUrl if cloud doesn't have it (since sheet usually doesn't store base64)
+        // CRITICAL: We overwrite status from cloud, as that is the source of truth for approvals
         localTxs[index] = {
           ...localTxs[index],
-          status: cloudTx.status, // Priority: Cloud Status
-          // Optional: Update other fields if cloud is source of truth
-          categoryName: cloudTx.categoryName,
-          projectName: cloudTx.projectName,
-          recordedByName: cloudTx.recordedByName,
+          status: cloudTx.status, 
+          // Update display names if they exist in cloud response
+          categoryName: cloudTx.categoryName || localTxs[index].categoryName,
+          projectName: cloudTx.projectName || localTxs[index].projectName,
+          recordedByName: cloudTx.recordedByName || localTxs[index].recordedByName,
         };
       } else {
-        // New transaction found in cloud (e.g. added by manager or other device?)
-        // Add it to local
+        // New transaction found in cloud (e.g. added by another device or manually in sheet)
         localTxs.push(cloudTx);
       }
     });
