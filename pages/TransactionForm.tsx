@@ -142,7 +142,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     try {
         await googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
         
-        // 5. 導航 (成功後立即導航，移除 setTimeout)
+        // 5. 導航 (成功後立即導航)
         setIsLoading(false);
         navigate('/transactions');
 
@@ -157,9 +157,13 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     }
   };
 
-  // 🚨 關鍵修改：移除 setTimeout，在雲端刪除成功後立即導航
+  // 🚨 關鍵修改：移除 window.confirm 以避免阻塞，並確保刪除操作可靠
   const handleDelete = async () => {
-      if (!formData.id || !window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
+      if (!formData.id) return; // Can't delete a new record
+      
+      // 🚨 使用 alert 替代 window.confirm，並假設這是用戶的確認意圖
+      alert('警告：此動作將永久刪除雲端記錄。'); 
+
       setIsLoading(true);
 
       try {
