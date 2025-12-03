@@ -3,27 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { storageService } from '../services/storage';
 import { googleSheetsService } from '../services/googleSheets';
 import { Role, Transaction, TransactionStatus, User } from '../types';
-import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare, Trash2 } from 'lucide-react';
+import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare, Trash2, Loader2 } from 'lucide-react';
 
 interface Props {
   user: User;
 }
-
-// ⚠️ 輔助函式：將 GAS 回傳的原始陣列數據 (any[][]) 轉換為前端的 Transaction[] 物件陣列。
-// 實際的欄位映射邏輯應在 storageService 中實現。
-const mapRawDataToTransactions = (headers: string[], data: any[][]): Transaction[] => {
-    // 由於我們不知道您的 Transaction 類型與 GAS 欄位索引的確切對應關係，
-    // 此處假設 storageService 內有一個方法能夠處理這項轉換。
-    // 為了讓應用程式能運行，我們必須呼叫一個假設存在的服務方法。
-    if (typeof storageService.processCloudTransactions === 'function') {
-        return storageService.processCloudTransactions(headers, data) as Transaction[];
-    }
-    
-    // 如果 processCloudTransactions 不存在，則退回載入本地儲存的數據。
-    console.error("Critical: storageService.processCloudTransactions is missing. Cannot map cloud data.");
-    return storageService.getTransactions();
-};
-
 
 export const TransactionList: React.FC<Props> = ({ user }) => {
   const navigate = useNavigate();
@@ -32,11 +16,11 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
   
-  // 🚨 修正 1：將 localTx 初始狀態設為空，避免載入舊的本地數據，依賴 useEffect 觸發 sync
+  // 修正：將 localTx 初始狀態設為空，等待雲端數據載入
   const [localTx, setLocalTx] = useState<Transaction[]>([]); 
   const [_, setConfigVersion] = useState(0); 
 
-  // 注意：這些服務呼叫會在每次渲染時執行，但假設它們是同步且快速的。
+  // 載入本地配置列表 (假設這些數據是同步且快速的)
   const categories = storageService.getCategories();
   const projects = storageService.getProjects();
   const paymentMethods = storageService.getPaymentMethods();
@@ -51,18 +35,19 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         const cloudDataResult = await googleSheetsService.fetchTransactions();
         
         if (cloudDataResult && cloudDataResult.data && cloudDataResult.data.length > 0) {
-            // 🚨 將原始陣列數據轉換為 Transaction 物件陣列
-            const structuredData = mapRawDataToTransactions(cloudDataResult.headers, cloudDataResult.data);
+            // 🚨 關鍵步驟：使用 storageService 的新方法轉換原始數據
+            const structuredData = storageService.processCloudTransactions(cloudDataResult.headers, cloudDataResult.data);
             
-            // 🚨 修正 2：直接用雲端數據更新 UI 狀態
+            // 用雲端數據更新 UI 狀態
             setLocalTx(structuredData);
             
-            // 🚨 可選：更新本地緩存，以供離線或 Form 組件使用
+            // 更新本地緩存
             storageService.saveAllTransactions(structuredData); 
 
         } else if (localTx.length === 0) {
-             // 如果雲端沒有數據，嘗試載入本地數據作為備用 (但如果 localTx 已經有數據，則保留它直到下次成功同步)
-             setLocalTx(storageService.getTransactions());
+             // 如果雲端沒有數據，嘗試載入本地數據作為備用
+             const localFallback = storageService.getTransactions();
+             if(localFallback.length > 0) setLocalTx(localFallback);
         }
 
         // 2. Fetch Latest Categories (Silent Update)
@@ -77,13 +62,14 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
             storageService.updateProjectsList(cloudProjs);
         }
         
-        setConfigVersion(v => v + 1); // trigger re-render if needed
+        setConfigVersion(v => v + 1); 
         setLastSyncTime(new Date().toLocaleTimeString());
         
     } catch (error) {
         console.error("同步失敗，載入本地數據:", error);
         alert("雲端同步失敗。請檢查網路連線。已載入本地緩存數據。");
-        setLocalTx(storageService.getTransactions()); // Fallback to local data
+        // 失敗時，退回本地數據
+        setLocalTx(storageService.getTransactions()); 
     } finally {
         setIsSyncing(false);
     }
@@ -118,6 +104,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   }, [localTx, user, filterStatus, searchTerm]);
 
   const getCategoryName = (id: string, syncedName?: string) => {
+      // 由於 cloudTxs 的 categoryId 現在是 'synced'，我們優先顯示 cloudTxs 提供的 categoryName
       if (syncedName && id === 'synced') return syncedName;
       return categories.find(c => c.id === id)?.name || id;
   };
@@ -143,7 +130,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         t.amount,
         `"${t.summary}"`,
         getCategoryName(t.categoryId, t.categoryName),
-        getProjectName(t.projectDeptId, t.projectName),
+        getProjectName(t.projectDeptId, t.projectDeptName), // Note: Using projectDeptName for cloud data consistency
         t.status,
         t.hasTaxId ? 'Yes' : 'No'
       ].join(','))
@@ -176,8 +163,9 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       const pmName = paymentMethods.find(p => p.id === tx.paymentMethodId)?.name || 'Unknown';
       
       try {
-          // Note: This updates the log in Google Sheet. 
           await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
+          // 💡 成功後建議重新同步所有數據，以防萬一
+          // await sync(); // 考慮延遲執行 sync() 避免連續操作
       } catch (error) {
           console.error("狀態同步失敗，請手動重試:", error);
           alert("狀態更新成功，但雲端同步失敗。請稍後重試。");
@@ -198,6 +186,8 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     // 3. Sync to Cloud (Fire delete command)
     try {
         await googleSheetsService.deleteTransaction(tx.id);
+        // 💡 成功後建議重新同步所有數據，以防萬一
+        // await sync(); 
     } catch (error) {
          console.error("雲端刪除失敗:", error);
          alert("雲端刪除失敗。請檢查網路或手動處理。");
@@ -261,6 +251,15 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
 
   return (
     <div className="space-y-3 md:space-y-6 pb-20">
+        {/* 載入指示器 */}
+        {isSyncing && (
+            <div className="fixed inset-0 bg-gray-50/50 backdrop-blur-sm flex items-center justify-center z-50">
+                <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-2xl">
+                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin mb-2" />
+                    <p className="text-sm font-medium text-gray-700">正在從雲端同步最新數據...</p>
+                </div>
+            </div>
+        )}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-4 sticky top-0 bg-gray-50 z-10 pb-2">
         <div className="flex items-center gap-2 pl-1">
             <h2 className="text-xl md:text-2xl font-bold text-gray-800">{user.role === Role.MANAGER ? '審核清單' : '我的記錄'}</h2>
