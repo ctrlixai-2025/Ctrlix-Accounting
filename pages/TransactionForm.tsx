@@ -14,6 +14,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
   const navigate = useNavigate();
   const { id } = useParams();
   
+  // 注意：這些服務呼叫會在每次渲染時執行，但假設它們是同步且快速的。
   const categories = storageService.getCategories().filter(c => c.isActive);
   const projects = storageService.getProjects().filter(p => p.isActive);
   const paymentMethods = storageService.getPaymentMethods().filter(pm => pm.isActive);
@@ -54,7 +55,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
             projectDeptId: prev.projectDeptId || projects[0]?.id || ''
         }));
     }
-  }, [id, user, navigate]); // Removed dependencies on lists to prevent resets
+  }, [id, user, navigate]); 
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value, type } = e.target;
@@ -80,24 +81,35 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
         
         // Auto-trigger Gemini analysis WITHOUT confirmation dialog
         setIsAnalyzing(true);
-        const result = await analyzeReceipt(base64);
-        setIsAnalyzing(false);
         
-        if (result) {
-          setFormData(prev => ({
-            ...prev,
-            date: result.date || prev.date,
-            amount: result.amount || prev.amount,
-            summary: result.summary || prev.summary,
-            hasTaxId: result.hasTaxId !== undefined ? result.hasTaxId : prev.hasTaxId,
-          }));
+        try {
+            const result = await analyzeReceipt(base64);
+            
+            if (result) {
+              setFormData(prev => ({
+                ...prev,
+                date: result.date || prev.date,
+                amount: result.amount || prev.amount,
+                summary: result.summary || prev.summary,
+                hasTaxId: result.hasTaxId !== undefined ? result.hasTaxId : prev.hasTaxId,
+              }));
+            } else {
+                alert('AI 辨識結果為空。請檢查憑證或手動填寫。');
+            }
+
+        } catch (error) {
+            console.error('AI 憑證分析失敗:', error);
+            alert('AI 憑證分析失敗，請檢查網路或手動填寫資料。');
+        } finally {
+            setIsAnalyzing(false);
         }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // 🚨 關鍵修改：使用 async/await 確保 Google Sheets 同步成功
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
@@ -126,32 +138,45 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     // 3. Save to Local Storage immediately
     storageService.saveTransaction(newTx);
 
-    // 4. Send to Google Sheets (Fire and Forget - do not await)
-    // We don't await this so the UI is responsive.
-    googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
-
-    // 5. Navigate away immediately
-    setTimeout(() => {
+    // 4. 【關鍵修改】等待 Google Sheets 同步完成
+    try {
+        await googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
+        
+        // 5. 導航 (成功後立即導航，移除 setTimeout)
         setIsLoading(false);
         navigate('/transactions');
-    }, 500); // Increased delay to 500ms to allow keepalive request to register
+
+    } catch (error) {
+        // 🚨 錯誤處理：通知使用者同步失敗
+        console.error('Google Sheets 同步失敗:', error);
+        alert('交易已儲存至本地，但雲端同步失敗。請檢查網路或稍後手動同步。');
+
+        // 失敗後也導航，但給予錯誤提示
+        setIsLoading(false);
+        navigate('/transactions');
+    }
   };
 
+  // 🚨 關鍵修改：移除 setTimeout，在雲端刪除成功後立即導航
   const handleDelete = async () => {
       if (!formData.id || !window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
       setIsLoading(true);
 
-      // 1. Delete Locally
-      storageService.deleteTransaction(formData.id);
+      try {
+        // 1. Delete Locally
+        storageService.deleteTransaction(formData.id);
 
-      // 2. Delete from Cloud
-      await googleSheetsService.deleteTransaction(formData.id);
+        // 2. Delete from Cloud
+        await googleSheetsService.deleteTransaction(formData.id);
 
-      // 3. Navigate
-      setTimeout(() => {
+        // 3. Navigate
         setIsLoading(false);
         navigate('/transactions');
-      }, 500); // Increased delay
+      } catch (error) {
+        console.error('刪除雲端記錄失敗:', error);
+        alert('本地記錄已刪除，但雲端刪除失敗。請檢查網路或手動處理。');
+        setIsLoading(false);
+      }
   };
 
   const canDelete = () => {
@@ -160,7 +185,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     if (user.role === Role.EMPLOYEE && formData.status === TransactionStatus.PENDING) {
         // ID check first
         if (formData.recordedById === user.id) return true;
-        // Name check fallback
+        // Name check fallback (較不安全，但保留以防萬一)
         if (formData.recordedByName === user.name) return true;
     }
     return false;
@@ -238,7 +263,6 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
                     <span className="text-sm">拍照或上傳圖片</span>
                   </div>
                 )}
-                {/* Removed capture="environment" to allow gallery selection */}
                 <input 
                   type="file" 
                   accept="image/*" 
@@ -248,7 +272,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
                 
                 {isAnalyzing && (
                   <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white backdrop-blur-sm">
-                    <Sparkles className="w-8 h-8 mb-2 animate-spin" />
+                    <Loader2 className="w-8 h-8 mb-2 animate-spin" />
                     <span className="text-sm font-bold">AI 正在辨識內容...</span>
                   </div>
                 )}
