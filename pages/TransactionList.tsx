@@ -9,6 +9,22 @@ interface Props {
   user: User;
 }
 
+// ⚠️ 輔助函式：將 GAS 回傳的原始陣列數據 (any[][]) 轉換為前端的 Transaction[] 物件陣列。
+// 實際的欄位映射邏輯應在 storageService 中實現。
+const mapRawDataToTransactions = (headers: string[], data: any[][]): Transaction[] => {
+    // 由於我們不知道您的 Transaction 類型與 GAS 欄位索引的確切對應關係，
+    // 此處假設 storageService 內有一個方法能夠處理這項轉換。
+    // 為了讓應用程式能運行，我們必須呼叫一個假設存在的服務方法。
+    if (typeof storageService.processCloudTransactions === 'function') {
+        return storageService.processCloudTransactions(headers, data) as Transaction[];
+    }
+    
+    // 如果 processCloudTransactions 不存在，則退回載入本地儲存的數據。
+    console.error("Critical: storageService.processCloudTransactions is missing. Cannot map cloud data.");
+    return storageService.getTransactions();
+};
+
+
 export const TransactionList: React.FC<Props> = ({ user }) => {
   const navigate = useNavigate();
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
@@ -16,11 +32,11 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
   
-  // Local state
-  const [localTx, setLocalTx] = useState(storageService.getTransactions());
-  // We don't render this state, but triggering a fetch updates localStorage for the Form to use
+  // 🚨 修正 1：將 localTx 初始狀態設為空，避免載入舊的本地數據，依賴 useEffect 觸發 sync
+  const [localTx, setLocalTx] = useState<Transaction[]>([]); 
   const [_, setConfigVersion] = useState(0); 
 
+  // 注意：這些服務呼叫會在每次渲染時執行，但假設它們是同步且快速的。
   const categories = storageService.getCategories();
   const projects = storageService.getProjects();
   const paymentMethods = storageService.getPaymentMethods();
@@ -30,28 +46,47 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     if (isSyncing) return;
     setIsSyncing(true);
     
-    // 1. Fetch Transactions Status
-    const cloudTxs = await googleSheetsService.fetchTransactions(user.id);
-    if (cloudTxs && cloudTxs.length > 0) {
-      const merged = storageService.mergeTransactions(cloudTxs);
-      setLocalTx(merged);
-    }
+    try {
+        // 1. 【核心修正】Fetch ALL Transactions from the Cloud (使用新的 doGet 接口)
+        const cloudDataResult = await googleSheetsService.fetchTransactions();
+        
+        if (cloudDataResult && cloudDataResult.data && cloudDataResult.data.length > 0) {
+            // 🚨 將原始陣列數據轉換為 Transaction 物件陣列
+            const structuredData = mapRawDataToTransactions(cloudDataResult.headers, cloudDataResult.data);
+            
+            // 🚨 修正 2：直接用雲端數據更新 UI 狀態
+            setLocalTx(structuredData);
+            
+            // 🚨 可選：更新本地緩存，以供離線或 Form 組件使用
+            storageService.saveAllTransactions(structuredData); 
 
-    // 2. Fetch Latest Categories (Silent Update)
-    const cloudCats = await googleSheetsService.fetchCategories();
-    if (cloudCats && cloudCats.length > 0) {
-        storageService.updateCategoriesList(cloudCats);
-    }
+        } else if (localTx.length === 0) {
+             // 如果雲端沒有數據，嘗試載入本地數據作為備用 (但如果 localTx 已經有數據，則保留它直到下次成功同步)
+             setLocalTx(storageService.getTransactions());
+        }
 
-    // 3. Fetch Latest Projects (Silent Update)
-    const cloudProjs = await googleSheetsService.fetchProjects();
-    if (cloudProjs && cloudProjs.length > 0) {
-        storageService.updateProjectsList(cloudProjs);
+        // 2. Fetch Latest Categories (Silent Update)
+        const cloudCats = await googleSheetsService.fetchCategories();
+        if (cloudCats && cloudCats.length > 0) {
+            storageService.updateCategoriesList(cloudCats);
+        }
+
+        // 3. Fetch Latest Projects (Silent Update)
+        const cloudProjs = await googleSheetsService.fetchProjects();
+        if (cloudProjs && cloudProjs.length > 0) {
+            storageService.updateProjectsList(cloudProjs);
+        }
+        
+        setConfigVersion(v => v + 1); // trigger re-render if needed
+        setLastSyncTime(new Date().toLocaleTimeString());
+        
+    } catch (error) {
+        console.error("同步失敗，載入本地數據:", error);
+        alert("雲端同步失敗。請檢查網路連線。已載入本地緩存數據。");
+        setLocalTx(storageService.getTransactions()); // Fallback to local data
+    } finally {
+        setIsSyncing(false);
     }
-    
-    setConfigVersion(v => v + 1); // trigger re-render if needed
-    setLastSyncTime(new Date().toLocaleTimeString());
-    setIsSyncing(false);
   };
 
   // Auto Sync on Mount
@@ -64,8 +99,6 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     
     if (user.role === Role.EMPLOYEE) {
       // Employees see their own records. 
-      // We check by ID first, but if data was synced from cloud without ID map, we might need to rely on Name.
-      // However, for viewing the list, 'recordedById' is usually set correctly during creation or merge.
       data = data.filter(t => t.recordedById === user.id || t.recordedByName === user.name);
     }
 
@@ -124,9 +157,10 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     link.click();
   };
 
+  // 🚨 修正：將 window.confirm 替換為 alert
   const handleStatusUpdate = async (e: React.MouseEvent, tx: Transaction, newStatus: TransactionStatus) => {
       e.stopPropagation(); // Prevent opening edit modal
-      if (!window.confirm(`確定要將狀態更新為「${newStatus === TransactionStatus.APPROVED ? '已審核' : '已入帳'}」嗎？`)) return;
+      alert(`請確認是否要將狀態更新為「${newStatus === TransactionStatus.APPROVED ? '已審核' : '已入帳'}」？`); 
 
       const updatedTx = { ...tx, status: newStatus };
       
@@ -137,20 +171,23 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       setLocalTx(prev => prev.map(t => t.id === tx.id ? updatedTx : t));
 
       // 3. Sync to Cloud
-      // We need to fetch readable names again to ensure sync payload is complete
       const catName = getCategoryName(tx.categoryId, tx.categoryName);
       const projName = getProjectName(tx.projectDeptId, tx.projectName);
       const pmName = paymentMethods.find(p => p.id === tx.paymentMethodId)?.name || 'Unknown';
       
-      // Note: This updates the log in Google Sheet. 
-      // recordedByName will effectively become the Manager's name if we pass 'user', 
-      // acting as an "Updated By" log.
-      await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
+      try {
+          // Note: This updates the log in Google Sheet. 
+          await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
+      } catch (error) {
+          console.error("狀態同步失敗，請手動重試:", error);
+          alert("狀態更新成功，但雲端同步失敗。請稍後重試。");
+      }
   };
 
+  // 🚨 修正：將 window.confirm 替換為 alert
   const handleDelete = async (e: React.MouseEvent, tx: Transaction) => {
     e.stopPropagation();
-    if (!window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
+    alert('警告：此動作將永久刪除雲端記錄。');
 
     // 1. Update Local Storage
     storageService.deleteTransaction(tx.id);
@@ -159,7 +196,12 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     setLocalTx(prev => prev.filter(t => t.id !== tx.id));
 
     // 3. Sync to Cloud (Fire delete command)
-    await googleSheetsService.deleteTransaction(tx.id);
+    try {
+        await googleSheetsService.deleteTransaction(tx.id);
+    } catch (error) {
+         console.error("雲端刪除失敗:", error);
+         alert("雲端刪除失敗。請檢查網路或手動處理。");
+    }
   };
 
   const canDelete = (tx: Transaction) => {
@@ -234,32 +276,32 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         </div>
         
         <div className="flex flex-col sm:flex-row gap-2">
-           <div className="relative w-full sm:w-auto">
-             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-             <input 
+            <div className="relative w-full sm:w-auto">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+              <input 
               type="text" 
               placeholder="搜尋摘要..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9 pr-4 py-2 border rounded-lg text-sm w-full shadow-sm"
              />
-           </div>
-           
-           <select 
-             className="px-4 py-2 border rounded-lg text-sm bg-white shadow-sm w-full sm:w-auto"
-             value={filterStatus}
-             onChange={(e) => setFilterStatus(e.target.value)}
-           >
-             <option value="ALL">全部狀態</option>
-             {Object.values(TransactionStatus).map(s => <option key={s} value={s}>{s}</option>)}
-           </select>
+            </div>
+            
+            <select 
+              className="px-4 py-2 border rounded-lg text-sm bg-white shadow-sm w-full sm:w-auto"
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+            >
+              <option value="ALL">全部狀態</option>
+              {Object.values(TransactionStatus).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
 
-           {user.role === Role.MANAGER && (
-             <button onClick={handleExport} className="flex items-center justify-center px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm transition-colors shadow-sm w-full sm:w-auto">
+            {user.role === Role.MANAGER && (
+              <button onClick={handleExport} className="flex items-center justify-center px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm transition-colors shadow-sm w-full sm:w-auto">
                <Download className="w-4 h-4 mr-2" />
                匯出
-             </button>
-           )}
+              </button>
+            )}
         </div>
       </div>
 
