@@ -10,6 +10,52 @@ interface Props {
   user: User;
 }
 
+// Utility to compress image before storage/upload
+const compressImage = (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 1024;
+        const MAX_HEIGHT = 1024;
+        let width = img.width;
+        let height = img.height;
+
+        // Calculate new dimensions
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          // Compress to JPEG with 0.7 quality
+          resolve(canvas.toDataURL('image/jpeg', 0.7));
+        } else {
+            resolve(event.target?.result as string);
+        }
+      };
+      img.onerror = () => {
+          resolve(event.target?.result as string);
+      }
+    };
+  });
+};
+
 export const TransactionForm: React.FC<Props> = ({ user }) => {
   const navigate = useNavigate();
   const { id } = useParams();
@@ -73,31 +119,28 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64 = reader.result as string;
-        setFormData(prev => ({ ...prev, attachmentUrl: base64 }));
-        
-        // Auto-trigger Gemini analysis WITHOUT confirmation dialog
-        setIsAnalyzing(true);
-        const result = await analyzeReceipt(base64);
-        setIsAnalyzing(false);
-        
-        if (result) {
-          setFormData(prev => ({
-            ...prev,
-            date: result.date || prev.date,
-            amount: result.amount || prev.amount,
-            summary: result.summary || prev.summary,
-            hasTaxId: result.hasTaxId !== undefined ? result.hasTaxId : prev.hasTaxId,
-          }));
-        }
-      };
-      reader.readAsDataURL(file);
+      // Compress first
+      const compressedBase64 = await compressImage(file);
+      setFormData(prev => ({ ...prev, attachmentUrl: compressedBase64 }));
+      
+      // Auto-trigger Gemini analysis
+      setIsAnalyzing(true);
+      const result = await analyzeReceipt(compressedBase64);
+      setIsAnalyzing(false);
+      
+      if (result) {
+        setFormData(prev => ({
+          ...prev,
+          date: result.date || prev.date,
+          amount: result.amount || prev.amount,
+          summary: result.summary || prev.summary,
+          hasTaxId: result.hasTaxId !== undefined ? result.hasTaxId : prev.hasTaxId,
+        }));
+      }
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
@@ -126,15 +169,17 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     // 3. Save to Local Storage immediately
     storageService.saveTransaction(newTx);
 
-    // 4. Send to Google Sheets (Fire and Forget - do not await)
-    // We don't await this so the UI is responsive.
-    googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
+    // 4. Send to Google Sheets (Await this time for image upload)
+    try {
+        await googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
+    } catch (e) {
+        console.error("Sync failed", e);
+        alert("儲存至本地成功，但雲端同步失敗。請稍後再試。");
+    }
 
-    // 5. Navigate away immediately
-    setTimeout(() => {
-        setIsLoading(false);
-        navigate('/transactions');
-    }, 500); // Increased delay to 500ms to allow keepalive request to register
+    // 5. Navigate away
+    setIsLoading(false);
+    navigate('/transactions');
   };
 
   const handleDelete = async () => {
@@ -148,10 +193,8 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
       await googleSheetsService.deleteTransaction(formData.id);
 
       // 3. Navigate
-      setTimeout(() => {
-        setIsLoading(false);
-        navigate('/transactions');
-      }, 500); // Increased delay
+      setIsLoading(false);
+      navigate('/transactions');
   };
 
   const canDelete = () => {
@@ -257,7 +300,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
             {formData.attachmentUrl && !isAnalyzing && (
                 <p className="text-xs text-green-600 mt-2 flex items-center justify-center">
                     <Sparkles className="w-3 h-3 mr-1" />
-                    AI 自動辨識完成
+                    AI 自動辨識完成 (已壓縮)
                 </p>
             )}
         </div>
@@ -374,7 +417,7 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
           {isLoading ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              儲存中...
+              {formData.attachmentUrl ? '上傳雲端並儲存中...' : '儲存中...'}
             </>
           ) : (
             <>
