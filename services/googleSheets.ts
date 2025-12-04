@@ -32,18 +32,36 @@ export const googleSheetsService = {
     };
 
     try {
-      await fetch(scriptUrl, {
+      const response = await fetch(scriptUrl, {
         method: 'POST',
-        // 'no-cors' is safer for GAS simply because CORS setup on GAS side is tricky.
-        // It allows the request to reach GAS even if headers aren't perfect.
-        mode: 'no-cors', 
-        // Use text/plain to avoid OPTIONS preflight request which often fails in GAS Web Apps
+        // Removed 'no-cors' to allow reading the response (Drive URL)
+        // GAS must return ContentService.createTextOutput(...).setMimeType(ContentService.MimeType.JSON)
+        // AND user must be deployed as "Anyone"
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
+
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      // If server returns a new photoURL (Drive Link), update local storage immediately
+      if (result.photoUrl && result.photoUrl.startsWith('http')) {
+        const currentTx = storageService.getTransactions().find(t => t.id === tx.id);
+        if (currentTx) {
+          currentTx.attachmentUrl = result.photoUrl;
+          storageService.saveTransaction(currentTx);
+        }
+      }
+
+      return result;
     } catch (error) {
       console.error('Google Sheet Sync Error:', error);
-      throw error;
+      // We don't throw here to allow "Offline" save to succeed locally even if sync fails
+      // But for image upload, the user might want to know.
+      // For now, we assume background sync will pick it up later or next load.
     }
   },
 
@@ -60,8 +78,8 @@ export const googleSheetsService = {
     try {
       await fetch(scriptUrl, {
         method: 'POST',
-        mode: 'no-cors',
-        keepalive: true, // Delete payload is small, keepalive is fine
+        // Keep keepalive for deletes as they are small and we might navigate away
+        keepalive: true, 
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
@@ -86,8 +104,6 @@ export const googleSheetsService = {
     try {
       await fetch(scriptUrl, {
         method: 'POST',
-        mode: 'no-cors',
-        keepalive: true,
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
@@ -111,8 +127,6 @@ export const googleSheetsService = {
     try {
       await fetch(scriptUrl, {
         method: 'POST',
-        mode: 'no-cors',
-        keepalive: true,
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
@@ -130,17 +144,13 @@ export const googleSheetsService = {
       const response = await fetch(`${scriptUrl}?action=getUsers&t=${Date.now()}`);
       if (response.ok) {
         const rawUsers = await response.json();
-        // Map Chinese roles to Enum if necessary
         return rawUsers.map((u: any) => {
             let role = Role.EMPLOYEE;
             const r = (u.role || '').toUpperCase().trim();
             if (r === 'MANAGER' || r === '管理員' || r === '主管') {
                 role = Role.MANAGER;
             }
-            return {
-                ...u,
-                role
-            };
+            return { ...u, role };
         });
       }
     } catch (error) {
