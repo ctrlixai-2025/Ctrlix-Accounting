@@ -98,9 +98,12 @@ export const storageService = {
       else if (statusStr === 'BOOKED' || statusStr === '已入帳') normalizedStatus = TransactionStatus.BOOKED;
       else normalizedStatus = TransactionStatus.PENDING;
 
+      // Access photoURL from cloud response (dynamic property from GAS)
+      const cloudPhotoUrl = (cloudTx as any).photoURL;
+
       const index = localTxs.findIndex(t => t.id === cloudTx.id);
       if (index >= 0) {
-        localTxs[index] = {
+        const updatedTx = {
           ...localTxs[index],
           status: normalizedStatus, 
           // Update display names if provided by cloud
@@ -108,9 +111,21 @@ export const storageService = {
           projectName: cloudTx.projectName || localTxs[index].projectName,
           recordedByName: cloudTx.recordedByName || localTxs[index].recordedByName,
         };
+        
+        // CRITICAL: If cloud returns a valid Drive Link (http...), replace local Base64/old URL
+        // This clears up LocalStorage space significantly and ensures we use the cloud file.
+        if (cloudPhotoUrl && cloudPhotoUrl.startsWith('http')) {
+             updatedTx.attachmentUrl = cloudPhotoUrl;
+        }
+
+        localTxs[index] = updatedTx;
       } else {
         // If it exists in cloud but not local, add it
-        localTxs.push({ ...cloudTx, status: normalizedStatus });
+        localTxs.push({ 
+            ...cloudTx, 
+            status: normalizedStatus,
+            attachmentUrl: (cloudPhotoUrl && cloudPhotoUrl.startsWith('http')) ? cloudPhotoUrl : cloudTx.attachmentUrl 
+        });
       }
     });
     localStorage.setItem(KEYS.TRANSACTIONS, JSON.stringify(localTxs));
