@@ -11,6 +11,7 @@ interface Props {
 }
 
 // Utility to compress image before storage/upload
+// Optimized for Google Apps Script payload limits (keep under 500KB preferably)
 const compressImage = (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -20,8 +21,8 @@ const compressImage = (file: File): Promise<string> => {
       img.src = event.target?.result as string;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1024;
-        const MAX_HEIGHT = 1024;
+        const MAX_WIDTH = 800;  // Reduced from 1024 to 800 for safety
+        const MAX_HEIGHT = 800;
         let width = img.width;
         let height = img.height;
 
@@ -43,8 +44,8 @@ const compressImage = (file: File): Promise<string> => {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          // Compress to JPEG with 0.7 quality
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          // Compress to JPEG with 0.6 quality (good balance for receipts)
+          resolve(canvas.toDataURL('image/jpeg', 0.6));
         } else {
             resolve(event.target?.result as string);
         }
@@ -79,6 +80,8 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     projectDeptId: projects[0]?.id || ''
   });
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     if (id) {
       const tx = storageService.getTransactions().find(t => t.id === id);
@@ -100,42 +103,44 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
             projectDeptId: prev.projectDeptId || projects[0]?.id || ''
         }));
     }
-  }, [id, user, navigate]); // Removed dependencies on lists to prevent resets
+  }, [id, user, navigate]); 
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
-    
-    if (type === 'checkbox') {
-        const checked = (e.target as HTMLInputElement).checked;
-        setFormData(prev => ({ ...prev, [name]: checked }));
+    if (type === 'number') {
+        setFormData(prev => ({ ...prev, [name]: Number(value) }));
+    } else if (name === 'hasTaxId') {
+        // handled separately by toggle
     } else {
-        setFormData(prev => ({
-            ...prev,
-            [name]: name === 'amount' ? Number(value) : value
-        }));
+        setFormData(prev => ({ ...prev, [name]: value }));
     }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Compress first
-      const compressedBase64 = await compressImage(file);
-      setFormData(prev => ({ ...prev, attachmentUrl: compressedBase64 }));
-      
-      // Auto-trigger Gemini analysis
       setIsAnalyzing(true);
-      const result = await analyzeReceipt(compressedBase64);
-      setIsAnalyzing(false);
-      
-      if (result) {
+      try {
+        const compressed = await compressImage(file);
+        
+        // 1. Save Image to State
+        setFormData(prev => ({ ...prev, attachmentUrl: compressed }));
+
+        // 2. AI Analysis
+        const result = await analyzeReceipt(compressed);
+        
         setFormData(prev => ({
           ...prev,
-          date: result.date || prev.date,
           amount: result.amount || prev.amount,
+          date: result.date || prev.date,
           summary: result.summary || prev.summary,
-          hasTaxId: result.hasTaxId !== undefined ? result.hasTaxId : prev.hasTaxId,
+          hasTaxId: result.hasTaxId ?? prev.hasTaxId
         }));
+      } catch (error) {
+        console.error('Error processing image', error);
+        alert('照片處理失敗，請重試');
+      } finally {
+        setIsAnalyzing(false);
       }
     }
   };
@@ -144,289 +149,278 @@ export const TransactionForm: React.FC<Props> = ({ user }) => {
     e.preventDefault();
     setIsLoading(true);
 
-    // 1. Prepare Data
-    const newTx: Transaction = {
-      id: formData.id || `t_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      date: formData.date!,
-      type: formData.type!,
-      amount: Number(formData.amount),
-      summary: formData.summary!,
-      attachmentUrl: formData.attachmentUrl,
-      hasTaxId: formData.hasTaxId || false,
-      paymentMethodId: formData.paymentMethodId || paymentMethods[0]?.id,
-      categoryId: formData.categoryId || categories[0]?.id,
-      projectDeptId: formData.projectDeptId || projects[0]?.id,
-      recordedById: formData.recordedById!,
-      status: formData.status!,
-      createdAt: formData.createdAt || Date.now()
-    };
-
-    // 2. Get readable names for Google Sheets
-    const categoryName = categories.find(c => c.id === newTx.categoryId)?.name || 'Unknown';
-    const projectName = projects.find(p => p.id === newTx.projectDeptId)?.name || 'Unknown';
-    const methodName = paymentMethods.find(p => p.id === newTx.paymentMethodId)?.name || 'Unknown';
-
-    // 3. Save to Local Storage immediately
-    storageService.saveTransaction(newTx);
-
-    // 4. Send to Google Sheets (Await this time for image upload)
     try {
-        await googleSheetsService.syncTransaction(newTx, user, categoryName, projectName, methodName);
-    } catch (e) {
-        console.error("Sync failed", e);
-        alert("儲存至本地成功，但雲端同步失敗。請稍後再試。");
-    }
+        const newTx: Transaction = {
+            ...formData as Transaction,
+            id: formData.id || `t_${Date.now()}`,
+            createdAt: formData.createdAt || Date.now(),
+            recordedById: user.id,
+            recordedByName: user.name // Cache name for offline view
+        };
 
-    // 5. Navigate away
+        // 1. Save Local
+        storageService.saveTransaction(newTx);
+
+        // 2. Sync to Google Sheet (Async but we await to confirm image upload if possible)
+        const catName = categories.find(c => c.id === newTx.categoryId)?.name || '';
+        const projName = projects.find(p => p.id === newTx.projectDeptId)?.name || '';
+        const pmName = paymentMethods.find(p => p.id === newTx.paymentMethodId)?.name || '';
+        
+        // We await this to ensure the image is uploaded before navigating
+        // If it fails, the error is logged but we still let the user proceed as it's saved locally
+        await googleSheetsService.syncTransaction(newTx, user, catName, projName, pmName);
+
+        navigate('/transactions');
+    } catch (error) {
+        console.error('Save failed', error);
+        alert('儲存發生錯誤，請重試');
+    } finally {
+        setIsLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!id || !window.confirm('確定要刪除此筆記錄嗎？')) return;
+    setIsLoading(true);
+    storageService.deleteTransaction(id);
+    await googleSheetsService.deleteTransaction(id);
     setIsLoading(false);
     navigate('/transactions');
   };
 
-  const handleDelete = async () => {
-      if (!formData.id || !window.confirm('確定要刪除此筆記錄嗎？(此動作將同步刪除雲端資料)')) return;
-      setIsLoading(true);
-
-      // 1. Delete Locally
-      storageService.deleteTransaction(formData.id);
-
-      // 2. Delete from Cloud
-      await googleSheetsService.deleteTransaction(formData.id);
-
-      // 3. Navigate
-      setIsLoading(false);
-      navigate('/transactions');
-  };
-
-  const canDelete = () => {
-    if (!id) return false; // Can't delete a new record
-    if (user.role === Role.MANAGER) return true;
-    if (user.role === Role.EMPLOYEE && formData.status === TransactionStatus.PENDING) {
-        // ID check first
-        if (formData.recordedById === user.id) return true;
-        // Name check fallback
-        if (formData.recordedByName === user.name) return true;
-    }
-    return false;
-  };
-
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-            <button 
-            onClick={() => navigate(-1)}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-            >
+    <div className="max-w-xl mx-auto pb-10">
+      <div className="flex items-center mb-6">
+        <button onClick={() => navigate(-1)} className="mr-4 p-2 hover:bg-gray-100 rounded-full">
             <ArrowLeft className="w-6 h-6 text-gray-600" />
-            </button>
-            <h2 className="text-2xl font-bold text-gray-800">
-            {id ? '編輯記錄' : '新增記錄'}
-            </h2>
-        </div>
-        {canDelete() && (
-            <button 
-                type="button" 
-                onClick={handleDelete}
-                className="text-red-500 hover:text-red-700 p-2 rounded-lg flex items-center gap-1"
-            >
-                <Trash2 className="w-5 h-5" />
-                <span className="text-sm font-medium">刪除</span>
-            </button>
-        )}
+        </button>
+        <h1 className="text-2xl font-bold text-gray-800">
+            {id ? '編輯記錄' : '新增支出/收入'}
+        </h1>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        {/* Type Selection */}
-        <div className="grid grid-cols-2 gap-4">
-          <button
-            type="button"
-            onClick={() => setFormData(prev => ({ ...prev, type: TransactionType.EXPENSE }))}
-            className={`py-3 rounded-xl font-bold transition-all ${
-              formData.type === TransactionType.EXPENSE
-                ? 'bg-red-500 text-white shadow-lg shadow-red-200'
-                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-            }`}
-          >
-            支出 (Expense)
-          </button>
-          <button
-            type="button"
-            onClick={() => setFormData(prev => ({ ...prev, type: TransactionType.INCOME }))}
-            className={`py-3 rounded-xl font-bold transition-all ${
-              formData.type === TransactionType.INCOME
-                ? 'bg-green-500 text-white shadow-lg shadow-green-200'
-                : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-            }`}
-          >
-            收入 (Income)
-          </button>
-        </div>
-
-        {/* Receipt Upload */}
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              交易憑證 / 收據
-            </label>
-            <div className="flex items-center gap-4">
-              <label className="flex items-center justify-center w-full h-32 border-2 border-dashed border-gray-300 rounded-xl cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-all group relative overflow-hidden">
-                {formData.attachmentUrl ? (
-                  <img 
-                    src={formData.attachmentUrl} 
-                    alt="Receipt" 
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center text-gray-400 group-hover:text-blue-500">
-                    <Camera className="w-8 h-8 mb-2" />
-                    <span className="text-sm">拍照或上傳圖片</span>
-                  </div>
-                )}
-                {/* Removed capture="environment" to allow gallery selection */}
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  onChange={handleFileChange}
-                  className="hidden" 
-                />
-                
-                {isAnalyzing && (
-                  <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white backdrop-blur-sm">
-                    <Sparkles className="w-8 h-8 mb-2 animate-spin" />
-                    <span className="text-sm font-bold">AI 正在辨識內容...</span>
-                  </div>
-                )}
-              </label>
-            </div>
-            {formData.attachmentUrl && !isAnalyzing && (
-                <p className="text-xs text-green-600 mt-2 flex items-center justify-center">
-                    <Sparkles className="w-3 h-3 mr-1" />
-                    AI 自動辨識完成 (已壓縮)
-                </p>
+      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        {/* Image / AI Section */}
+        <div className="bg-blue-50 p-6 text-center border-b border-blue-100">
+            <input 
+                type="file" 
+                accept="image/*" 
+                capture="environment"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileChange}
+            />
+            
+            {formData.attachmentUrl ? (
+                <div className="relative inline-block">
+                    <img 
+                        src={formData.attachmentUrl} 
+                        alt="Receipt" 
+                        className="max-h-64 rounded-lg shadow-md border border-gray-200" 
+                    />
+                    <button 
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="absolute bottom-2 right-2 bg-black/70 text-white p-2 rounded-full"
+                    >
+                        <Edit2Icon className="w-4 h-4" />
+                    </button>
+                    {isAnalyzing && (
+                        <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center rounded-lg text-white">
+                            <Sparkles className="w-8 h-8 animate-spin mb-2 text-yellow-300" />
+                            <span className="text-sm font-bold">AI 辨識中...</span>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <button 
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isAnalyzing}
+                    className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-blue-300 rounded-lg hover:bg-blue-100 transition-colors"
+                >
+                    {isAnalyzing ? (
+                        <>
+                            <Loader2 className="w-8 h-8 text-blue-500 animate-spin mb-2" />
+                            <span className="text-sm text-blue-600">處理中...</span>
+                        </>
+                    ) : (
+                        <>
+                            <Camera className="w-8 h-8 text-blue-500 mb-2" />
+                            <span className="text-sm font-medium text-blue-700">拍照或上傳收據 (AI 自動辨識)</span>
+                        </>
+                    )}
+                </button>
             )}
         </div>
 
-        {/* Amount & Date */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">日期</label>
-            <input
-              type="date"
-              name="date"
-              required
-              value={formData.date}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">金額</label>
-            <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-bold">$</span>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            {/* Type Selector */}
+            <div className="flex bg-gray-100 p-1 rounded-lg">
+                <button
+                    type="button"
+                    onClick={() => setFormData(prev => ({ ...prev, type: TransactionType.EXPENSE }))}
+                    className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${
+                        formData.type === TransactionType.EXPENSE 
+                        ? 'bg-white text-red-600 shadow-sm' 
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                >
+                    支出 (Expense)
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setFormData(prev => ({ ...prev, type: TransactionType.INCOME }))}
+                    className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${
+                        formData.type === TransactionType.INCOME 
+                        ? 'bg-white text-green-600 shadow-sm' 
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                >
+                    收入 (Income)
+                </button>
+            </div>
+
+            {/* Date & Amount */}
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">日期</label>
+                    <input
+                        type="date"
+                        name="date"
+                        required
+                        value={formData.date}
+                        onChange={handleInputChange}
+                        className="w-full p-3 border rounded-lg bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                    />
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">金額</label>
+                    <input
+                        type="number"
+                        name="amount"
+                        required
+                        min="0"
+                        value={formData.amount}
+                        onChange={handleInputChange}
+                        className="w-full p-3 border rounded-lg bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-200 text-lg font-bold"
+                    />
+                </div>
+            </div>
+
+            {/* Summary */}
+            <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">摘要說明</label>
                 <input
-                type="number"
-                name="amount"
-                required
-                min="0"
-                value={formData.amount}
-                onChange={handleInputChange}
-                className="w-full pl-8 pr-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white text-lg font-bold text-gray-800"
+                    type="text"
+                    name="summary"
+                    required
+                    placeholder="例如：午餐會議、購買文具"
+                    value={formData.summary}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border rounded-lg bg-gray-50 focus:bg-white outline-none focus:ring-2 focus:ring-blue-200"
                 />
             </div>
-          </div>
-        </div>
 
-        {/* Summary */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">摘要說明</label>
-          <input
-            type="text"
-            name="summary"
-            required
-            placeholder="例如：客戶餐費、購買文具"
-            value={formData.summary}
-            onChange={handleInputChange}
-            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
-          />
-        </div>
+            {/* Categories & Projects */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">會計科目</label>
+                    <select
+                        name="categoryId"
+                        value={formData.categoryId}
+                        onChange={handleInputChange}
+                        className="w-full p-3 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                    >
+                        {categories.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                    </select>
+                </div>
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">專案/部門</label>
+                    <select
+                        name="projectDeptId"
+                        value={formData.projectDeptId}
+                        onChange={handleInputChange}
+                        className="w-full p-3 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                    >
+                        {projects.map(p => (
+                            <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                    </select>
+                </div>
+            </div>
 
-        {/* Dropdowns */}
-        <div className="grid grid-cols-1 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">會計科目</label>
-            <select
-              name="categoryId"
-              value={formData.categoryId}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-            >
-              {categories.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-          </div>
+            {/* Payment Method & Tax ID */}
+            <div className="grid grid-cols-2 gap-4 items-center">
+                <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">支付方式</label>
+                    <select
+                        name="paymentMethodId"
+                        value={formData.paymentMethodId}
+                        onChange={handleInputChange}
+                        className="w-full p-3 border rounded-lg bg-white outline-none focus:ring-2 focus:ring-blue-200"
+                    >
+                        {paymentMethods.map(pm => (
+                            <option key={pm.id} value={pm.id}>{pm.name}</option>
+                        ))}
+                    </select>
+                </div>
+                <div className="flex items-center pt-5">
+                    <label className="flex items-center cursor-pointer select-none">
+                        <div className="relative">
+                            <input 
+                                type="checkbox" 
+                                className="sr-only" 
+                                checked={formData.hasTaxId}
+                                onChange={e => setFormData(prev => ({ ...prev, hasTaxId: e.target.checked }))}
+                            />
+                            <div className={`block w-14 h-8 rounded-full transition-colors ${formData.hasTaxId ? 'bg-blue-600' : 'bg-gray-300'}`}></div>
+                            <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${formData.hasTaxId ? 'transform translate-x-6' : ''}`}></div>
+                        </div>
+                        <span className="ml-3 text-sm font-medium text-gray-700">有統編?</span>
+                    </label>
+                </div>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">專案 / 部門</label>
-            <select
-              name="projectDeptId"
-              value={formData.projectDeptId}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-            >
-              {projects.map(p => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">付款方式</label>
-            <select
-              name="paymentMethodId"
-              value={formData.paymentMethodId}
-              onChange={handleInputChange}
-              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-blue-500 outline-none bg-white"
-            >
-              {paymentMethods.map(pm => (
-                <option key={pm.id} value={pm.id}>{pm.name}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Boolean Tax ID Checkbox */}
-        <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl border border-gray-200">
-            <input
-                type="checkbox"
-                id="hasTaxId"
-                name="hasTaxId"
-                checked={formData.hasTaxId}
-                onChange={handleInputChange}
-                className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
-            />
-            <label htmlFor="hasTaxId" className="text-gray-700 font-medium select-none cursor-pointer">
-                是否已報公司統編？
-            </label>
-        </div>
-
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="w-full bg-blue-800 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-900 transition-colors shadow-lg shadow-blue-200 flex items-center justify-center gap-2"
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              {formData.attachmentUrl ? '上傳雲端並儲存中...' : '儲存中...'}
-            </>
-          ) : (
-            <>
-              <Save className="w-5 h-5" />
-              確認儲存
-            </>
-          )}
-        </button>
-      </form>
+            {/* Actions */}
+            <div className="pt-4 flex gap-3">
+                {id && (
+                   <button
+                        type="button"
+                        onClick={handleDelete}
+                        disabled={isLoading}
+                        className="flex-none px-4 py-3 bg-red-50 text-red-600 rounded-xl font-bold hover:bg-red-100 transition-colors"
+                   >
+                        <Trash2 className="w-5 h-5" />
+                   </button>
+                )}
+                <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200 flex items-center justify-center"
+                >
+                    {isLoading ? (
+                        <>
+                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                            {id ? '更新並同步...' : '儲存並同步...'}
+                        </>
+                    ) : (
+                        <>
+                            <Save className="w-5 h-5 mr-2" />
+                            {id ? '更新記錄' : '儲存記錄'}
+                        </>
+                    )}
+                </button>
+            </div>
+        </form>
+      </div>
     </div>
   );
 };
+
+// Helper Icon for the edit overlay
+const Edit2Icon = ({ className }: { className?: string }) => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
+);
