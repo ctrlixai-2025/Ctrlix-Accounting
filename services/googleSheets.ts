@@ -2,7 +2,7 @@ import { storageService } from './storage';
 import { Category, ProjectDept, Role, Transaction, User } from '../types';
 
 export const googleSheetsService = {
-  // 1. Submit Transaction (Fire and Forget)
+  // 1. Submit Transaction (Wait for completion to ensure image upload)
   syncTransaction: async (
     tx: Transaction,
     user: User,
@@ -13,6 +13,8 @@ export const googleSheetsService = {
     const scriptUrl = storageService.getGoogleScriptUrl();
     if (!scriptUrl) return;
 
+    // Prepare payload matching the GAS expectation
+    // GAS expects 'photoData' with full Data URL string for image upload
     const payload = {
       dataType: 'TRANSACTION',
       id: tx.id,
@@ -25,19 +27,23 @@ export const googleSheetsService = {
       methodName,
       hasTaxId: tx.hasTaxId,
       status: tx.status,
-      recordedByName: user.name
+      recordedByName: user.name,
+      photoData: (tx.attachmentUrl && tx.attachmentUrl.startsWith('data:')) ? tx.attachmentUrl : ''
     };
 
     try {
       await fetch(scriptUrl, {
         method: 'POST',
+        // 'no-cors' is safer for GAS simply because CORS setup on GAS side is tricky.
+        // It allows the request to reach GAS even if headers aren't perfect.
         mode: 'no-cors', 
-        keepalive: true, // Ensure request survives navigation
-        headers: { 'Content-Type': 'application/json' },
+        // Use text/plain to avoid OPTIONS preflight request which often fails in GAS Web Apps
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
     } catch (error) {
       console.error('Google Sheet Sync Error:', error);
+      throw error;
     }
   },
 
@@ -55,8 +61,8 @@ export const googleSheetsService = {
       await fetch(scriptUrl, {
         method: 'POST',
         mode: 'no-cors',
-        keepalive: true, // Ensure request survives navigation
-        headers: { 'Content-Type': 'application/json' },
+        keepalive: true, // Delete payload is small, keepalive is fine
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
     } catch (error) {
@@ -82,7 +88,7 @@ export const googleSheetsService = {
         method: 'POST',
         mode: 'no-cors',
         keepalive: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
     } catch (error) {
@@ -107,7 +113,7 @@ export const googleSheetsService = {
         method: 'POST',
         mode: 'no-cors',
         keepalive: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(payload),
       });
     } catch (error) {
