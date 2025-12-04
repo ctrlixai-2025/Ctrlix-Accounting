@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { storageService } from '../services/storage';
 import { googleSheetsService } from '../services/googleSheets';
 import { Role, Transaction, TransactionStatus, User } from '../types';
-import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare, Trash2, Loader2 } from 'lucide-react';
+import { Edit2, Search, Download, CheckCircle, Clock, BookOpen, Receipt, User as UserIcon, RefreshCw, ThumbsUp, CheckSquare } from 'lucide-react';
 
 interface Props {
   user: User;
@@ -16,11 +16,11 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>('');
   
-  // 修正：將 localTx 初始狀態設為空，等待雲端數據載入
-  const [localTx, setLocalTx] = useState<Transaction[]>([]); 
+  // Local state
+  const [localTx, setLocalTx] = useState(storageService.getTransactions());
+  // We don't render this state, but triggering a fetch updates localStorage for the Form to use
   const [_, setConfigVersion] = useState(0); 
 
-  // 載入本地配置列表 (假設這些數據是同步且快速的)
   const categories = storageService.getCategories();
   const projects = storageService.getProjects();
   const paymentMethods = storageService.getPaymentMethods();
@@ -30,49 +30,28 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     if (isSyncing) return;
     setIsSyncing(true);
     
-    try {
-        // 1. 【核心修正】Fetch ALL Transactions from the Cloud (使用新的 doGet 接口)
-        const cloudDataResult = await googleSheetsService.fetchTransactions();
-        
-        if (cloudDataResult && cloudDataResult.data && cloudDataResult.data.length > 0) {
-            // 🚨 關鍵步驟：使用 storageService 的新方法轉換原始數據
-            const structuredData = storageService.processCloudTransactions(cloudDataResult.headers, cloudDataResult.data);
-            
-            // 用雲端數據更新 UI 狀態
-            setLocalTx(structuredData);
-            
-            // 更新本地緩存
-            storageService.saveAllTransactions(structuredData); 
-
-        } else if (localTx.length === 0) {
-             // 如果雲端沒有數據，嘗試載入本地數據作為備用
-             const localFallback = storageService.getTransactions();
-             if(localFallback.length > 0) setLocalTx(localFallback);
-        }
-
-        // 2. Fetch Latest Categories (Silent Update)
-        const cloudCats = await googleSheetsService.fetchCategories();
-        if (cloudCats && cloudCats.length > 0) {
-            storageService.updateCategoriesList(cloudCats);
-        }
-
-        // 3. Fetch Latest Projects (Silent Update)
-        const cloudProjs = await googleSheetsService.fetchProjects();
-        if (cloudProjs && cloudProjs.length > 0) {
-            storageService.updateProjectsList(cloudProjs);
-        }
-        
-        setConfigVersion(v => v + 1); 
-        setLastSyncTime(new Date().toLocaleTimeString());
-        
-    } catch (error) {
-        console.error("同步失敗，載入本地數據:", error);
-        alert("雲端同步失敗。請檢查網路連線。已載入本地緩存數據。");
-        // 失敗時，退回本地數據
-        setLocalTx(storageService.getTransactions()); 
-    } finally {
-        setIsSyncing(false);
+    // 1. Fetch Transactions Status
+    const cloudTxs = await googleSheetsService.fetchTransactions(user.id);
+    if (cloudTxs && cloudTxs.length > 0) {
+      const merged = storageService.mergeTransactions(cloudTxs);
+      setLocalTx(merged);
     }
+
+    // 2. Fetch Latest Categories (Silent Update)
+    const cloudCats = await googleSheetsService.fetchCategories();
+    if (cloudCats && cloudCats.length > 0) {
+        storageService.updateCategoriesList(cloudCats);
+    }
+
+    // 3. Fetch Latest Projects (Silent Update)
+    const cloudProjs = await googleSheetsService.fetchProjects();
+    if (cloudProjs && cloudProjs.length > 0) {
+        storageService.updateProjectsList(cloudProjs);
+    }
+    
+    setConfigVersion(v => v + 1); // trigger re-render if needed
+    setLastSyncTime(new Date().toLocaleTimeString());
+    setIsSyncing(false);
   };
 
   // Auto Sync on Mount
@@ -84,8 +63,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     let data = localTx; 
     
     if (user.role === Role.EMPLOYEE) {
-      // Employees see their own records. 
-      data = data.filter(t => t.recordedById === user.id || t.recordedByName === user.name);
+      data = data.filter(t => t.recordedById === user.id);
     }
 
     if (filterStatus !== 'ALL') {
@@ -104,7 +82,6 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
   }, [localTx, user, filterStatus, searchTerm]);
 
   const getCategoryName = (id: string, syncedName?: string) => {
-      // 由於 cloudTxs 的 categoryId 現在是 'synced'，我們優先顯示 cloudTxs 提供的 categoryName
       if (syncedName && id === 'synced') return syncedName;
       return categories.find(c => c.id === id)?.name || id;
   };
@@ -130,7 +107,7 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         t.amount,
         `"${t.summary}"`,
         getCategoryName(t.categoryId, t.categoryName),
-        getProjectName(t.projectDeptId, t.projectDeptName), // Note: Using projectDeptName for cloud data consistency
+        getProjectName(t.projectDeptId, t.projectName),
         t.status,
         t.hasTaxId ? 'Yes' : 'No'
       ].join(','))
@@ -144,10 +121,9 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
     link.click();
   };
 
-  // 🚨 修正：將 window.confirm 替換為 alert
   const handleStatusUpdate = async (e: React.MouseEvent, tx: Transaction, newStatus: TransactionStatus) => {
       e.stopPropagation(); // Prevent opening edit modal
-      alert(`請確認是否要將狀態更新為「${newStatus === TransactionStatus.APPROVED ? '已審核' : '已入帳'}」？`); 
+      if (!window.confirm(`確定要將狀態更新為「${newStatus === TransactionStatus.APPROVED ? '已審核' : '已入帳'}」嗎？`)) return;
 
       const updatedTx = { ...tx, status: newStatus };
       
@@ -158,51 +134,15 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
       setLocalTx(prev => prev.map(t => t.id === tx.id ? updatedTx : t));
 
       // 3. Sync to Cloud
+      // We need to fetch readable names again to ensure sync payload is complete
       const catName = getCategoryName(tx.categoryId, tx.categoryName);
       const projName = getProjectName(tx.projectDeptId, tx.projectName);
       const pmName = paymentMethods.find(p => p.id === tx.paymentMethodId)?.name || 'Unknown';
       
-      try {
-          await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
-          // 💡 成功後建議重新同步所有數據，以防萬一
-          // await sync(); // 考慮延遲執行 sync() 避免連續操作
-      } catch (error) {
-          console.error("狀態同步失敗，請手動重試:", error);
-          alert("狀態更新成功，但雲端同步失敗。請稍後重試。");
-      }
-  };
-
-  // 🚨 修正：將 window.confirm 替換為 alert
-  const handleDelete = async (e: React.MouseEvent, tx: Transaction) => {
-    e.stopPropagation();
-    alert('警告：此動作將永久刪除雲端記錄。');
-
-    // 1. Update Local Storage
-    storageService.deleteTransaction(tx.id);
-    
-    // 2. Update UI
-    setLocalTx(prev => prev.filter(t => t.id !== tx.id));
-
-    // 3. Sync to Cloud (Fire delete command)
-    try {
-        await googleSheetsService.deleteTransaction(tx.id);
-        // 💡 成功後建議重新同步所有數據，以防萬一
-        // await sync(); 
-    } catch (error) {
-         console.error("雲端刪除失敗:", error);
-         alert("雲端刪除失敗。請檢查網路或手動處理。");
-    }
-  };
-
-  const canDelete = (tx: Transaction) => {
-    if (user.role === Role.MANAGER) return true;
-    if (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING) {
-        // Primary check: ID
-        if (tx.recordedById === user.id) return true;
-        // Fallback check: Name (Useful if data synced from cloud has different/missing ID structure)
-        if (tx.recordedByName === user.name) return true;
-    }
-    return false;
+      // Note: This updates the log in Google Sheet. 
+      // recordedByName will effectively become the Manager's name if we pass 'user', 
+      // acting as an "Updated By" log.
+      await googleSheetsService.syncTransaction(updatedTx, user, catName, projName, pmName);
   };
 
   const getStatusBadge = (status: TransactionStatus) => {
@@ -251,15 +191,6 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
 
   return (
     <div className="space-y-3 md:space-y-6 pb-20">
-        {/* 載入指示器 */}
-        {isSyncing && (
-            <div className="fixed inset-0 bg-gray-50/50 backdrop-blur-sm flex items-center justify-center z-50">
-                <div className="flex flex-col items-center p-4 bg-white rounded-xl shadow-2xl">
-                    <Loader2 className="w-8 h-8 text-blue-600 animate-spin mb-2" />
-                    <p className="text-sm font-medium text-gray-700">正在從雲端同步最新數據...</p>
-                </div>
-            </div>
-        )}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 md:gap-4 sticky top-0 bg-gray-50 z-10 pb-2">
         <div className="flex items-center gap-2 pl-1">
             <h2 className="text-xl md:text-2xl font-bold text-gray-800">{user.role === Role.MANAGER ? '審核清單' : '我的記錄'}</h2>
@@ -275,32 +206,32 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
         </div>
         
         <div className="flex flex-col sm:flex-row gap-2">
-            <div className="relative w-full sm:w-auto">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-              <input 
+           <div className="relative w-full sm:w-auto">
+             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+             <input 
               type="text" 
               placeholder="搜尋摘要..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9 pr-4 py-2 border rounded-lg text-sm w-full shadow-sm"
              />
-            </div>
-            
-            <select 
-              className="px-4 py-2 border rounded-lg text-sm bg-white shadow-sm w-full sm:w-auto"
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-            >
-              <option value="ALL">全部狀態</option>
-              {Object.values(TransactionStatus).map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+           </div>
+           
+           <select 
+             className="px-4 py-2 border rounded-lg text-sm bg-white shadow-sm w-full sm:w-auto"
+             value={filterStatus}
+             onChange={(e) => setFilterStatus(e.target.value)}
+           >
+             <option value="ALL">全部狀態</option>
+             {Object.values(TransactionStatus).map(s => <option key={s} value={s}>{s}</option>)}
+           </select>
 
-            {user.role === Role.MANAGER && (
-              <button onClick={handleExport} className="flex items-center justify-center px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm transition-colors shadow-sm w-full sm:w-auto">
+           {user.role === Role.MANAGER && (
+             <button onClick={handleExport} className="flex items-center justify-center px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg text-sm transition-colors shadow-sm w-full sm:w-auto">
                <Download className="w-4 h-4 mr-2" />
                匯出
-              </button>
-            )}
+             </button>
+           )}
         </div>
       </div>
 
@@ -345,22 +276,11 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                   {user.role === Role.MANAGER && <ManagerActions tx={tx} />}
                 </div>
                 
-                <div className="flex items-center gap-2">
-                    {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
-                        <span className="text-sm text-blue-600 font-medium flex items-center bg-blue-50 px-2 py-1 rounded">
-                            編輯 <Edit2 className="w-3 h-3 ml-1" />
-                        </span>
-                    )}
-                    {canDelete(tx) && (
-                        <button 
-                            onClick={(e) => handleDelete(e, tx)}
-                            className="flex items-center px-2 py-1.5 text-red-600 bg-red-50 rounded hover:bg-red-100 text-xs font-medium"
-                        >
-                            <Trash2 className="w-3 h-3 mr-1" />
-                            刪除
-                        </button>
-                    )}
-                </div>
+                {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
+                    <span className="text-sm text-blue-600 font-medium flex items-center bg-blue-50 px-2 py-1 rounded">
+                        編輯 <Edit2 className="w-3 h-3 ml-1" />
+                    </span>
+                )}
               </div>
             </div>
           ))
@@ -412,26 +332,15 @@ export const TransactionList: React.FC<Props> = ({ user }) => {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <div className="flex items-center justify-end gap-2">
-                            {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
-                                <button 
-                                onClick={() => navigate(`/edit/${tx.id}`)}
-                                className="text-blue-600 hover:text-blue-900 bg-blue-50 p-2 rounded-full"
-                                title="編輯詳情"
-                                >
-                                <Edit2 className="w-4 h-4" />
-                                </button>
-                            )}
-                            {canDelete(tx) && (
-                                <button 
-                                    onClick={(e) => handleDelete(e, tx)}
-                                    className="text-red-600 hover:text-red-900 bg-red-50 p-2 rounded-full"
-                                    title="刪除"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            )}
-                        </div>
+                      {(user.role === Role.MANAGER || (user.role === Role.EMPLOYEE && tx.status === TransactionStatus.PENDING)) && (
+                        <button 
+                          onClick={() => navigate(`/edit/${tx.id}`)}
+                          className="text-blue-600 hover:text-blue-900 bg-blue-50 p-2 rounded-full"
+                          title="編輯詳情"
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
